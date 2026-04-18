@@ -1,5 +1,5 @@
 from const.question_body import QuestionRequest
-from model import mock_data
+from model.mock_data import mock_data
 from model.assistant_service import handle_user_message
 from glucose_prediction_service import GlucosePredictionService
 from const.time_step import GlucosePredictionInput
@@ -26,7 +26,7 @@ async def predict_glucose_level(request: GlucosePredictionInput):
     return {"predicted_glucose": float(predicted_glucose)}
      
 @app.post("/ask")
-async def ask_question(request: QuestionRequest):
+def ask_question(request: QuestionRequest):
     response = handle_user_message(
         message=request.question,
         data=mock_data  

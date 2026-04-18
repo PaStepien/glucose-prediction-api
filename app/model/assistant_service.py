@@ -15,10 +15,14 @@ def detect_intent(message: str) -> str:
 
 
 def call_prediction_api(time_steps: list) -> float:
-    response = requests.post(
-        PREDICTION_API_URL,
-        json={"time_steps": time_steps}
-    )
+    try:
+        response = requests.post(
+            PREDICTION_API_URL,
+            json={"time_steps": time_steps},
+            timeout=20,
+        )
+    except requests.RequestException as exc:
+        raise Exception(f"Prediction service request failed: {exc}") from exc
     
     print(f"Prediction API response: {response.status_code} - {response.text}")
 
