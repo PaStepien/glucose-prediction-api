@@ -2,9 +2,9 @@ from flask import json
 import requests
 from typing import Optional
 
-from prompts.classifier_prompt import build_classifier_prompt
-from client import query_llama, query_llama_classifier
-from prompts.prompt import build_prompt
+from model.prompts.classifier_prompt import build_classifier_prompt
+from model.client import query_llama, query_llama_classifier
+from model.prompts.prompt import build_prompt
 
 
 PREDICTION_API_URL = "http://localhost:8000/predict"
