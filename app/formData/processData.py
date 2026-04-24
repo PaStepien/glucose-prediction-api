@@ -61,12 +61,12 @@ ALL_COLS = FEATURE_COLS + ["glucose"]   # 12 columns total, glucose last
 
 # ── Load model and scalers once at startup ────────────────────────────
 
-MODEL_DIR = Path("model_artifacts")   # adjust to your actual path
+MODEL_DIR = Path("/")   # adjust to your actual path
 
 @app.on_event("startup")
 def load_artifacts():
     global model, scaler_X, scaler_y
-    model    = keras.models.load_model(MODEL_DIR / "lstm_model.keras")
+    model    = keras.models.load_model(MODEL_DIR / "lstm_model.h5")
     scaler_X = joblib.load(MODEL_DIR / "scaler_X.pkl")
     scaler_y = joblib.load(MODEL_DIR / "scaler_y.pkl")
     print(f"Model input shape: {model.input_shape}")   # should be (None, 36, 12)
