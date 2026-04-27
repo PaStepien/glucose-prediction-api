@@ -67,8 +67,10 @@ MODEL_DIR = Path("/")   # adjust to your actual path
 def load_artifacts():
     global model, scaler_X, scaler_y
     model    = keras.models.load_model(MODEL_DIR / "lstm_model.h5")
-    scaler_X = joblib.load(MODEL_DIR / "scaler_X.pkl")
     scaler_y = joblib.load(MODEL_DIR / "scaler_y.pkl")
+    scaler_X = joblib.load(MODEL_DIR / "scaler_X.pkl")
+    print('Scaler x ready' , scaler_X)
+    print('Scaler y ready' , scaler_y)
     print(f"Model input shape: {model.input_shape}")   # should be (None, 36, 12)
 
 
@@ -202,7 +204,7 @@ def _insulin_activity(grid: pd.DatetimeIndex, bolus_raw: np.ndarray) -> np.ndarr
 
 # ── Scaling + sequence building (mirrors training loop) ───────────────
 
-def prepare_lstm_input(df: pd.DataFrame) -> np.ndarray:
+def prepare_lstm_input(df: pd.DataFrame, scaler_X, scaler_y) -> np.ndarray:
     """
     Replicates exactly what training does before create_sequences():
 
@@ -241,8 +243,8 @@ def prepare_lstm_input(df: pd.DataFrame) -> np.ndarray:
 
 # ── Endpoint ──────────────────────────────────────────────────────────
 
-@app.post("/api/predict")
-async def predict(payload: LogEntryPayload):
+# @app.post("/api/predict")
+# async def predict(payload: LogEntryPayload):
     if len(payload.cgm_preview) < TIME_STEPS:
         raise HTTPException(
             status_code=400,

@@ -155,37 +155,91 @@ def mock_cgm(user_id: str, n: int = Query(default=36, ge=36, le=288)):
 @app.post("/api/log-entry")
 def save_log_entry(payload: LogEntryRequest):
     row = {
-        "user_id":    payload.user_id,
+        "user_id": payload.user_id,
         "entry_date": payload.entry_date.isoformat(),
-        "meals":      [m.model_dump(mode="json") for m in payload.meals],
-        "boluses":    [b.model_dump(mode="json") for b in payload.boluses],
-        "activity":   [a.model_dump(mode="json") for a in payload.activity],
-        "cgm":        [c.model_dump(mode="json") for c in payload.cgm_preview],
+        "meals": [m.model_dump(mode="json") for m in payload.meals],
+        "boluses": [b.model_dump(mode="json") for b in payload.boluses],
+        "activity": [a.model_dump(mode="json") for a in payload.activity],
+        "cgm": [c.model_dump(mode="json") for c in payload.cgm_preview],
     }
 
     if supabase is None:
-        print(
-            f"[no-db] entry for user {payload.user_id}: "
-            f"{len(payload.meals)} meals | "
-            f"{len(payload.boluses)} boluses | "
-            f"{len(payload.cgm_preview)} CGM readings"
-        )
         return {"status": "saved (no db)", "id": None}
 
+    # ── 1. Save RAW ───────────────────────────────────────────
     result = supabase.table("log_entries").insert(row).execute()
 
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to save log entry")
 
     saved = result.data[0]
-    print(f"✅ Saved log entry id={saved['id']} for user {payload.user_id}")
+    log_id = saved["id"]
 
+    print(f"✅ Saved log entry id={log_id}")
+
+    # ── 2. PROCESS + PREDICT ──────────────────────────────────
+    try:
+        if lstm_model is None:
+            raise Exception("Model not loaded")
+
+        df = build_feature_df(payload)
+        X = prepare_lstm_input(df, scaler_X, scaler_y)
+
+        y_pred_scaled = lstm_model.predict(X)
+        y_pred = scaler_y.inverse_transform(y_pred_scaled)
+
+        predicted_glucose = float(y_pred[0, 0])
+        current_glucose = float(df["glucose"].iloc[-1])
+        prediction_time = df.index[-1] + timedelta(minutes=30)
+
+        latest = df.iloc[-1]
+
+        # ── 3. SAVE PROCESSED ──────────────────────────────────
+        processed_row = {
+            "user_id": payload.user_id,
+            "log_entry_id": log_id,
+            "prediction_for_time": prediction_time.isoformat(),
+
+            "predicted_glucose_mgdl": predicted_glucose,
+            "current_glucose_mgdl": current_glucose,
+            "horizon_minutes": 30,
+
+            # features (aligned!)
+            "glucose": float(latest["glucose"]),
+            "bolus_raw": float(latest["bolus_raw"]),
+            "insulin_activity": float(latest["insulin_activity"]),
+            "carbs": float(latest["carbs"]),
+            "meal_breakfast": float(latest["meal_Breakfast"]),
+            "meal_dinner": float(latest["meal_Dinner"]),
+            "meal_hypocorrection": float(latest["meal_HypoCorrection"]),
+            "meal_lunch": float(latest["meal_Lunch"]),
+            "meal_snack": float(latest["meal_Snack"]),
+            "meal_activity": float(latest["meal_activity"]),
+            "steps": float(latest["steps"]),
+            "steps_weighted_avg": float(latest["steps_weighted_avg"]),
+
+            # optional debug
+            "lstm_window": df.tail(36).to_dict(orient="records"),
+        }
+
+        pred_result = supabase.table("processed_predictions").insert(processed_row).execute()
+
+        print(processed_row)
+
+        prediction_id = pred_result.data[0]["id"] if pred_result.data else None
+
+    except Exception as e:
+        print(f"⚠️ Processing failed: {e}")
+        prediction_id = None
+        predicted_glucose = None
+
+    # ── RESPONSE ──────────────────────────────────────────────
     return {
-        "status":    "saved",
-        "id":        saved["id"],
-        "logged_at": saved.get("logged_at"),
+        "status": "saved",
+        "log_entry_id": log_id,
+        "prediction_id": prediction_id,
+        "predicted_glucose_mgdl": predicted_glucose,
     }
-
 
 @app.get("/api/log-history/{user_id}")
 def get_log_history(
@@ -198,15 +252,14 @@ def get_log_history(
     since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
     result = (
-        supabase.table("log_entries")
+        supabase.table("processed_predictions")
         .select("*")
         .eq("user_id", user_id)
-        .gte("logged_at", since)
-        .order("logged_at", desc=True)
+        .gte("created_at", since)
+        .order("created_at", desc=True)
         .limit(50)
         .execute()
     )
-
     return result.data or []
 
 @app.post("/api/predict", response_model=PredictionResponse)
@@ -252,6 +305,8 @@ async def predict_glucose_level(request: GlucosePredictionInput):
     predicted_glucose = service.scaler_y.inverse_transform(prediction)[0][0]
 
     return {"predicted_glucose": float(predicted_glucose)}
+
+
 
 
 @app.post("/ask")
