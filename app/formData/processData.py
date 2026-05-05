@@ -8,7 +8,7 @@ Critical details extracted from training:
   - scaler_y fitted on glucose column only
   - TIME_STEPS = 36  →  3 hours of history (36 × 5 min)
   - horizon   = 6   →  predicts glucose 30 min ahead (6 × 5 min)
-  - Input to LSTM: (batch, 36, 13)  — 12 features + glucose appended as col 13
+  - Input to LSTM: (batch, 36, 12)  — 11 features + glucose as col 12
   - Output: scaled glucose scalar → inverse_transform → mg/dL
 
 Save your scalers after training with:
@@ -23,7 +23,7 @@ import joblib
 import keras
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List
 from pathlib import Path
 
@@ -52,12 +52,10 @@ FEATURE_COLS = [
     "steps_weighted_avg",
 ]
 # LSTM sees these 11 features + glucose as the 12th column → shape (36, 12)
-# (matches model.py: `features = [col for col in train_df.columns
-#                    if col not in ['patient_id', 'timestamp', 'glucose']]`
-#  then `p_data_combined = np.hstack([p_features, p_target])`)
 
 ALL_COLS = FEATURE_COLS + ["glucose"]   # 12 columns total, glucose last
 
+HISTORY_WINDOW_MINUTES = TIME_STEPS * 5  # 180 min — how far back we look
 
 # ── Load model and scalers once at startup ────────────────────────────
 
@@ -69,8 +67,8 @@ def load_artifacts():
     model    = keras.models.load_model(MODEL_DIR / "lstm_model.h5")
     scaler_y = joblib.load(MODEL_DIR / "scaler_y.pkl")
     scaler_X = joblib.load(MODEL_DIR / "scaler_X.pkl")
-    print('Scaler x ready' , scaler_X)
-    print('Scaler y ready' , scaler_y)
+    print("Scaler X ready:", scaler_X)
+    print("Scaler y ready:", scaler_y)
     print(f"Model input shape: {model.input_shape}")   # should be (None, 36, 12)
 
 
@@ -100,6 +98,43 @@ class LogEntryPayload(BaseModel):
     cgm_preview: List[CGMReading]   # must cover at least 3 h (36 readings)
 
 
+# ── Log-history slice: grab the last TIME_STEPS-worth of relevant data ──
+
+def slice_recent_log(payload: LogEntryPayload) -> LogEntryPayload:
+    """
+    Given a full log-history payload, return a new payload that contains only
+    the entries falling within the last HISTORY_WINDOW_MINUTES (180 min) of
+    CGM data.  This lets callers pass their entire log without pre-filtering.
+
+    The cutoff is derived from the latest CGM timestamp, so the window is
+    always anchored to the most recent glucose reading rather than wall-clock
+    time (safe for replaying historical data too).
+    """
+    if not payload.cgm_preview:
+        return payload
+
+    latest_cgm = max(r.timestamp for r in payload.cgm_preview)
+
+    # Make latest_cgm timezone-aware if needed, to compare with other fields
+    def _ensure_tz(dt: datetime) -> datetime:
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt
+
+    latest_cgm = _ensure_tz(latest_cgm)
+    cutoff = latest_cgm - pd.Timedelta(minutes=HISTORY_WINDOW_MINUTES)
+
+    def _within(dt: datetime) -> bool:
+        return _ensure_tz(dt) >= cutoff
+
+    return LogEntryPayload(
+        cgm_preview=[r for r in payload.cgm_preview if _within(r.timestamp)],
+        meals=[m for m in payload.meals if _within(m.logged_at)],
+        boluses=[b for b in payload.boluses if _within(b.logged_at)],
+        activity=[a for a in payload.activity if _within(a.logged_at)],
+    )
+
+
 # ── Feature engineering (mirrors training pipeline) ───────────────────
 
 STEPS_WINDOW    = 10
@@ -110,27 +145,29 @@ INSULIN_MAX_MIN = 300
 
 
 def build_feature_df(payload: LogEntryPayload) -> pd.DataFrame:
-    """
-    Converts raw user events → aligned 5-min DataFrame with all feature
-    columns in the same order as training.
-    """
     # 1. Build 5-min grid anchored to CGM readings
     times = sorted([r.timestamp for r in payload.cgm_preview])
     start = pd.Timestamp(times[0]).floor(STEP_FREQ)
-    end   = pd.Timestamp(times[-1]).ceil(STEP_FREQ)
+    end   = pd.Timestamp(times[-1]).floor(STEP_FREQ)
     grid  = pd.date_range(start=start, end=end, freq=STEP_FREQ)
 
     df = pd.DataFrame(index=grid)
 
-    # 2. CGM glucose — resample().mean() + linear interpolation, limit=2
-    #    (mirrors preprocess_patient exactly)
+    # 2. CGM glucose
     cgm_series = pd.Series(
-        {pd.Timestamp(r.timestamp): r.glucose for r in payload.cgm_preview},
+        data=[r.glucose for r in payload.cgm_preview],
+        index=[pd.Timestamp(r.timestamp).floor(STEP_FREQ) for r in payload.cgm_preview],
         dtype=float,
     )
+    cgm_series = cgm_series.groupby(level=0).mean()
     df["glucose"] = cgm_series.reindex(grid)
+
+    if df["glucose"].isna().any():
+        missing = df[df["glucose"].isna()]
+        print(missing)
+        raise ValueError("Missing CGM readings after 5-minute alignment.")
+
     df["glucose"] = df["glucose"].interpolate(method="linear", limit=INTERP_LIMIT)
-    # leave remaining NaNs — create_sequences skips windows with NaN
 
     # 3. bolus_raw
     df["bolus_raw"] = 0.0
@@ -145,9 +182,11 @@ def build_feature_df(payload: LogEntryPayload) -> pd.DataFrame:
         df[col] = 0.0
 
     type_col = {
-        "Breakfast": "meal_Breakfast", "Dinner": "meal_Dinner",
+        "Breakfast":      "meal_Breakfast",
+        "Dinner":         "meal_Dinner",
         "HypoCorrection": "meal_HypoCorrection",
-        "Lunch": "meal_Lunch",         "Snack": "meal_Snack",
+        "Lunch":          "meal_Lunch",
+        "Snack":          "meal_Snack",
     }
     for meal in payload.meals:
         idx = grid.get_indexer([pd.Timestamp(meal.logged_at)], method="nearest")[0]
@@ -216,20 +255,17 @@ def prepare_lstm_input(df: pd.DataFrame, scaler_X, scaler_y) -> np.ndarray:
     feature_vals = df[FEATURE_COLS].values          # (T, 11)
     glucose_vals = df[["glucose"]].values            # (T, 1)
 
-    # Apply the scalers that were fit on training data
     X_scaled = scaler_X.transform(feature_vals)      # (T, 11)
     y_scaled = scaler_y.transform(glucose_vals)      # (T, 1)
 
     combined = np.hstack([X_scaled, y_scaled])       # (T, 12)
 
-    # We need exactly TIME_STEPS rows without any NaN
     if len(combined) < TIME_STEPS:
         raise ValueError(
             f"Not enough history: need {TIME_STEPS} steps (3 h), "
             f"got {len(combined)}. Send more CGM readings."
         )
 
-    # Take the most recent TIME_STEPS rows (the freshest context window)
     window = combined[-TIME_STEPS:]                  # (36, 12)
 
     if np.isnan(window).any():
@@ -243,24 +279,27 @@ def prepare_lstm_input(df: pd.DataFrame, scaler_X, scaler_y) -> np.ndarray:
 
 # ── Endpoint ──────────────────────────────────────────────────────────
 
-# @app.post("/api/predict")
-# async def predict(payload: LogEntryPayload):
+@app.post("/api/predict")
+async def predict(payload: LogEntryPayload):
+    # Trim the full log-history down to the relevant 3-hour window
+    payload = slice_recent_log(payload)
+
     if len(payload.cgm_preview) < TIME_STEPS:
         raise HTTPException(
             status_code=400,
-            detail=f"Need at least {TIME_STEPS} CGM readings (3 hours). "
-                   f"Received {len(payload.cgm_preview)}.",
+            detail=(f"Need at least {TIME_STEPS} CGM readings (3 hours). "
+                f"Received {len(payload.cgm_preview)}."
+            ),
         )
 
     try:
         df = build_feature_df(payload)
-        X  = prepare_lstm_input(df)
+        X  = prepare_lstm_input(df, scaler_X, scaler_y)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
-    # Predict (output is scaled glucose)
-    y_pred_scaled = model.predict(X)                         # (1, 1)
-    y_pred_mgdl   = scaler_y.inverse_transform(y_pred_scaled)  # back to mg/dL
+    y_pred_scaled = model.predict(X)                            # (1, 1)
+    y_pred_mgdl   = scaler_y.inverse_transform(y_pred_scaled)   # → mg/dL
 
     predicted_glucose = float(y_pred_mgdl[0, 0])
     prediction_time   = df.index[-1] + pd.Timedelta(minutes=HORIZON * 5)
