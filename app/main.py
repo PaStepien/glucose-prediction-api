@@ -1,5 +1,6 @@
 import base64
 from datetime import datetime, timedelta, timezone
+import pandas as pd
 from typing import List, Optional
 
 import numpy as np
@@ -307,14 +308,42 @@ async def predict_glucose_level(request: GlucosePredictionInput):
     return {"predicted_glucose": float(predicted_glucose)}
 
 
-
-
 @app.post("/ask")
 def ask_question(request: QuestionRequest):
+
+    since = "2026-05-05T02:46:19+00:00"
+    
+    result = (
+        supabase.table("processed_predictions")
+        .select("*")
+        .eq("user_id", request.user_id)
+        .gte("created_at", since)
+        .order("created_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+ 
+    if result.data:
+        row = result.data[0]
+        df = pd.DataFrame(row["lstm_window"])
+    
+        # Use created_at as the anchor for the last row, then work backwards 5 min intervals
+        last_timestamp = pd.Timestamp(row["created_at"])
+        timestamps = [last_timestamp - pd.Timedelta(minutes=5 * i) for i in range(len(df) - 1, -1, -1)]
+        df.index = pd.DatetimeIndex(timestamps)
+            
+    else:
+        df = None
+        
+    print(f"Fetched log entry for user {request.user_id}: {'found' if df is not None else 'not found'}" )
     response = handle_user_message(
         message=request.question,
-        data=mock_data,
+        data=df,
+        lstm_model=lstm_model,
+        scaler_X=scaler_X,
+        scaler_y=scaler_y,
     )
+    print(f"Assistant response: {response}")
 
     try:
         audio_bytes = generate_audio(response["answer"])

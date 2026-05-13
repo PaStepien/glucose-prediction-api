@@ -1,5 +1,7 @@
-from flask import json
-import requests
+import json
+
+from formData.processData import prepare_lstm_input
+from model.helpers import build_assistant_context
 from typing import Optional
 
 from model.prompts.classifier_prompt import build_classifier_prompt
@@ -13,27 +15,12 @@ def detect_intent(message: str) -> str:
     prompt = build_classifier_prompt(message)
     return query_llama_classifier(prompt)
 
-
-def call_prediction_api(time_steps: list) -> float:
-    try:
-        response = requests.post(
-            PREDICTION_API_URL,
-            json={"time_steps": time_steps},
-            timeout=20,
-        )
-    except requests.RequestException as exc:
-        raise Exception(f"Prediction service request failed: {exc}") from exc
-    
-    print(f"Prediction API response: {response.status_code} - {response.text}")
-
-    if response.status_code != 200:
-        raise Exception("Prediction service failed")
-
-    return response.json()["predicted_glucose"]
-
 def handle_user_message(
     message: str,
-    data: dict
+    data: Optional,
+    lstm_model,
+    scaler_X,
+    scaler_y
 ) -> dict:
 
     intent_response = detect_intent(message)
@@ -49,22 +36,33 @@ def handle_user_message(
     print(f"Detected intent: {intent}")
 
     predicted_glucose: Optional[float] = None
+    
+    context = build_assistant_context(data)
+        
+    print(f"Built context: {context}")
 
     if intent == "general":
         prompt = message
     else:
+        if data is None or (not hasattr(data, 'empty') and not isinstance(data, dict)):
+            return {"error": "Data must be a DataFrame or dictionary for prediction."}
+        
         if intent == "predict":
-            if "time_steps" not in data or len(data["time_steps"]) != 36:
-                return {
-                    "error": "Prediction requires exactly 36 time steps."
-                }
+            if lstm_model is None or scaler_X is None or scaler_y is None:
+                return {"error": "Model/scalers not provided for prediction."}
+            if not isinstance(data, dict):
+                return {"error": "Data must be a dictionary for prediction."}
+            X = prepare_lstm_input(data, scaler_X, scaler_y)
+            y_pred_scaled = lstm_model.predict(X)
+            y_pred = scaler_y.inverse_transform(y_pred_scaled)
+            predicted_glucose = float(y_pred[0, 0])
 
-            predicted_glucose = call_prediction_api(data["time_steps"])
             print(f"Predicted glucose: {predicted_glucose}")
+    
         
         prompt = build_prompt(
             question=message,
-            data=data,
+            context=context,
             predicted_glucose=predicted_glucose
         )
 

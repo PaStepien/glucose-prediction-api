@@ -1,11 +1,11 @@
 def build_prompt(
     question: str,
-    data: dict,
+    context: dict,
     predicted_glucose: float | None = None
 ) -> str:
     
     print(f"Building prompt with question: {question}")
-    print(f"Data: {data}")
+    print(f"Data: {context}")
     print(f"Predicted glucose: {predicted_glucose}")
     
     return f"""
@@ -24,13 +24,14 @@ User question:
 ---
 
 Context:
-- Glucose trend: {data.get('trend', 'unknown')}
-- Recent glucose change: {data.get('recent_change', 'unknown')}
-- Recent carbs: {data.get('carbs', 'unknown')} grams
-- Time since meal: {data.get('meal_time', 'unknown')} minutes
-- Insulin dose: {data.get('insulin', 'unknown')} units
-- Time since insulin: {data.get('insulin_time', 'unknown')} minutes
-- Physical activity: {data.get('steps', 'unknown')}
+- Time since last data entry: {context.get('time_since_entry', 'unknown')} minutes
+- Glucose trend: {context.get('trend', 'unknown')}
+- Recent glucose change: {context.get('recent_change', 'unknown')}
+- Recent carbs: {context.get('carbs', 'unknown')} grams
+- Time since meal: {context.get('meal_time', 'unknown')} minutes
+- Insulin dose: {context.get('insulin', 'unknown')} units
+- Time since insulin: {context.get('insulin_time', 'unknown')} minutes
+- Physical activity: {context.get('steps', 'unknown')}
 
 {f"- Predicted glucose in 30 minutes: {predicted_glucose} mg/dL" if predicted_glucose is not None else ""}
 
