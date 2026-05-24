@@ -1,4 +1,4 @@
-FROM llama3
+FROM gemma4:e4b 
 
 SYSTEM """
 You are PAM, a virtual diabetes assistant designed to support people living with diabetes. 

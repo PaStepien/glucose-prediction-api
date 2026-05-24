@@ -6,6 +6,7 @@ Classify the user message into EXACTLY one of these categories:
 - PREDICT
 - EXPLAIN
 - GENERAL
+- SAFETY
 
 Definitions:
 PREDICT:
@@ -22,6 +23,16 @@ This includes:
 - asking what caused a change
 - asking for reasoning based on current data
 
+SAFETY:
+The user describes physical symptoms or distress that may need immediate action.
+This includes:
+- physical symptoms (dizzy, shaking, sweating, blurry vision, confused, faint)
+- urgency language ("I feel terrible", "something is wrong", "help")
+- severe glucose language ("very low", "very high", "crashing")
+- any mention of losing consciousness or needing emergency help
+- taking too much or too little insulin and needing advice
+- any mention of severe hypoglycemia or hyperglycemia symptoms
+
 GENERAL:
 Everything else:
 - greetings
@@ -32,11 +43,23 @@ Everything else:
 Rules:
 - Output ONLY valid JSON
 - Do NOT include any text before or after JSON
-- Use EXACT category names (PREDICT, EXPLAIN, GENERAL)
-- If unsure, return GENERAL
+- Use EXACT category names (PREDICT, EXPLAIN, GENERAL, SAFETY)
+- SAFETY always takes priority. If ANY symptom or urgency language is present, prioritise rule SAFETY regardless of the rest of the message.
+- If unsure between SAFETY and anything else, return SAFETY.
+- If unsure between other categories, return GENERAL.
 
 Example:
 {{"intent": "GENERAL"}}
+{{"intent": "PREDICT"}}
+{{"intent": "SAFETY"}}
+
+"am I going to go low?" -> PREDICT
+"should I have a snack now?" -> PREDICT
+"will I be okay for my run?" -> PREDICT
+"I feel dizzy" -> SAFETY
+"my hands are shaking" -> SAFETY
+"I think I'm crashing" -> SAFETY
+"why did my glucose drop after lunch?" -> EXPLAIN
 
 User message:
 "{question}"

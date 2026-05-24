@@ -311,7 +311,7 @@ async def predict_glucose_level(request: GlucosePredictionInput):
 @app.post("/ask")
 def ask_question(request: QuestionRequest):
 
-    since = "2026-05-05T02:46:19+00:00"
+    since = "2026-05-23 13:30:00+00:00"
     
     result = (
         supabase.table("processed_predictions")

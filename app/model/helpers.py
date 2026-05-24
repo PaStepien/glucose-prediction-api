@@ -54,7 +54,7 @@ def build_assistant_context(df):
     else:
         steps = "high"
         
-    time_since_entry = int((pd.Timestamp("2026-05-05T08:46:19+00:00") - df.index[-1]).total_seconds() / 60)
+    time_since_entry = int((pd.Timestamp("2026-05-23 13:30:00+00:00") - df.index[-1]).total_seconds() / 60)
 
     return {
         "trend": trend,
@@ -64,5 +64,6 @@ def build_assistant_context(df):
         "insulin": insulin,
         "insulin_time": insulin_time,
         "steps": steps,
-        "time_since_entry": time_since_entry
+        "time_since_entry": time_since_entry,
+        "glucose_sequence": df["glucose"].tolist()[-36:],
     }
